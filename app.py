@@ -1,584 +1,501 @@
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from flask_cors import CORS
-import random
-import time
-from datetime import datetime
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
+from datetime import datetime
+import random
 
 app = Flask(__name__)
-
-# Production configuration
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'fallback-secret-key-for-development')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///game.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///rps_game.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-this')
 
-# Handle PostgreSQL URL format for Render
-if app.config['SQLALCHEMY_DATABASE_URI'] and app.config['SQLALCHEMY_DATABASE_URI'].startswith('postgres://'):
-    app.config['SQLALCHEMY_DATABASE_URI'] = app.config['SQLALCHEMY_DATABASE_URI'].replace('postgres://', 'postgresql://', 1)
-
-# Initialize extensions
-try:
-    from models import db, User, GameSession, ChatMessage, Leaderboard
-    db.init_app(app)
-    print("✅ Database models imported successfully!")
-except Exception as e:
-    print(f"❌ Database import error: {e}")
-    # Fallback to SQLite if PostgreSQL fails
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///game.db'
-    from models import db, User, GameSession, ChatMessage, Leaderboard
-    db.init_app(app)
-
+db = SQLAlchemy(app)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='gevent')
 
-# SocketIO configuration for production
-socketio = SocketIO(
-    app, 
-    cors_allowed_origins="*", 
-    async_mode='eventlet',
-    logger=True,
-    engineio_logger=False
-)
+# Models
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    wins = db.Column(db.Integer, default=0)
+    losses = db.Column(db.Integer, default=0)
+    draws = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
-# In-memory storage for active games and players
+class Leaderboard(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    score = db.Column(db.Integer, default=0)
+    wins = db.Column(db.Integer, default=0)
+    losses = db.Column(db.Integer, default=0)
+    user = db.relationship('User', backref=db.backref('leaderboard', lazy=True))
+
+class GameSession(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    player1_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    player2_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    winner_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    status = db.Column(db.String(20), default='completed')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Game state management
 active_games = {}
 waiting_players = {}
-connected_users = {}
+user_socket_map = {}
 
+# Routes
 @app.route('/')
 def home():
     return jsonify({
-        'message': 'Rock Paper Scissors Game Server',
-        'status': 'running',
-        'timestamp': datetime.utcnow().isoformat(),
-        'version': '1.0.0'
+        "message": "Rock Paper Scissors Server",
+        "status": "online",
+        "players_waiting": len(waiting_players)
     })
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    db_status = "unknown"
-    try:
-        db.session.execute('SELECT 1')
-        db_status = "connected"
-    except:
-        db_status = "disconnected"
-    
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.utcnow().isoformat(),
-        'database': db_status,
-        'active_games': len(active_games),
-        'waiting_players': len(waiting_players),
-        'connected_users': len(connected_users)
-    })
-
-# Authentication routes
 @app.route('/api/register', methods=['POST'])
 def register():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({'success': False, 'message': 'No JSON data provided'}), 400
+            return jsonify({"error": "No data provided"}), 400
             
         username = data.get('username')
         password = data.get('password')
-        email = data.get('email')
-
-        if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password required'}), 400
-
-        if User.query.filter_by(username=username).first():
-            return jsonify({'success': False, 'message': 'Username already exists'}), 400
-
-        user = User(username=username, email=email)
-        user.set_password(password)
         
+        if not username or not password:
+            return jsonify({"error": "Username and password required"}), 400
+        
+        if len(username) < 3:
+            return jsonify({"error": "Username must be at least 3 characters"}), 400
+        
+        if len(password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters"}), 400
+        
+        if User.query.filter_by(username=username).first():
+            return jsonify({"error": "Username already exists"}), 400
+        
+        user = User(username=username)
+        user.set_password(password)
         db.session.add(user)
         db.session.commit()
-
+        
+        # Create leaderboard entry
+        leaderboard = Leaderboard(user_id=user.id)
+        db.session.add(leaderboard)
+        db.session.commit()
+        
         return jsonify({
-            'success': True,
-            'message': 'User created successfully',
-            'user': user.to_dict()
-        }), 201
-
+            "message": "User created successfully", 
+            "user_id": user.id,
+            "username": user.username
+        })
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({'success': False, 'message': 'No JSON data provided'}), 400
-            
         username = data.get('username')
         password = data.get('password')
-
+        
+        if not username or not password:
+            return jsonify({"error": "Username and password required"}), 400
+        
         user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            return jsonify({
+                "message": "Login successful",
+                "user_id": user.id,
+                "username": user.username,
+                "wins": user.wins,
+                "losses": user.losses,
+                "draws": user.draws
+            })
         
-        if not user or not user.check_password(password):
-            return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-
-        # Update user status
-        user.is_online = True
-        user.last_seen = datetime.utcnow()
-        db.session.commit()
-
-        return jsonify({
-            'success': True,
-            'message': 'Login successful',
-            'user': user.to_dict()
-        }), 200
-
+        return jsonify({"error": "Invalid credentials"}), 401
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/api/profile/<int:user_id>', methods=['GET'])
+@app.route('/api/profile/<int:user_id>')
 def get_profile(user_id):
-    try:
-        user = User.query.get(user_id)
-        if not user:
-            return jsonify({'success': False, 'message': 'User not found'}), 404
-        return jsonify({'success': True, 'user': user.to_dict()}), 200
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({
+        "username": user.username,
+        "wins": user.wins,
+        "losses": user.losses,
+        "draws": user.draws,
+        "total_games": user.wins + user.losses + user.draws,
+        "win_rate": round((user.wins / max(user.wins + user.losses + user.draws, 1)) * 100, 2)
+    })
 
-@app.route('/api/leaderboard', methods=['GET'])
+@app.route('/api/leaderboard')
 def get_leaderboard():
-    try:
-        # Get top 50 players by score
-        top_players = User.query.order_by(User.total_score.desc()).limit(50).all()
-        
-        leaderboard_data = []
-        for rank, user in enumerate(top_players, 1):
-            user_data = user.to_dict()
-            user_data['rank'] = rank
-            leaderboard_data.append(user_data)
-        
-        return jsonify({
-            'success': True,
-            'leaderboard': leaderboard_data
-        }), 200
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    leaders = Leaderboard.query.join(User).order_by(Leaderboard.score.desc()).limit(20).all()
+    result = []
+    for idx, leader in enumerate(leaders, 1):
+        result.append({
+            'rank': idx,
+            'username': leader.user.username,
+            'score': leader.score,
+            'wins': leader.wins,
+            'losses': leader.losses
+        })
+    return jsonify(result)
 
-# Socket.IO events
+@app.route('/api/stats')
+def get_stats():
+    total_users = User.query.count()
+    total_games = GameSession.query.count()
+    active_players = len(user_socket_map)
+    
+    return jsonify({
+        "total_users": total_users,
+        "total_games": total_games,
+        "active_players": active_players,
+        "games_in_progress": len(active_games)
+    })
+
+# SocketIO Events
 @socketio.on('connect')
 def handle_connect():
-    print(f"✅ Client connected: {request.sid}")
-    emit('connected', {'message': 'Connected to server', 'sid': request.sid})
+    print(f"Client connected: {request.sid}")
+    emit('connected', {'message': 'Connected to server'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
-    print(f"❌ Client disconnected: {request.sid}")
+    print(f"Client disconnected: {request.sid}")
     
-    # Clean up user data
-    user_id = connected_users.get(request.sid)
-    if user_id:
-        user = User.query.get(user_id)
-        if user:
-            user.is_online = False
-            user.last_seen = datetime.utcnow()
-            db.session.commit()
-        
-        del connected_users[request.sid]
-    
-    # Remove from waiting players
+    # Remove from waiting list
     if request.sid in waiting_players:
-        del waiting_players[request.sid]
+        user_data = waiting_players.pop(request.sid)
+        print(f"Removed {user_data.get('username')} from waiting list")
     
-    # Clean up games
-    for game_id, game in list(active_games.items()):
-        if request.sid in [game['player1_sid'], game['player2_sid']]:
-            handle_game_disconnect(game_id, request.sid)
-
-@socketio.on('user_authenticated')
-def handle_user_authenticated(data):
-    try:
-        user_id = data.get('user_id')
-        if not user_id:
-            emit('authentication_failed', {'message': 'User ID required'})
-            return
+    # Remove from user-socket map
+    for user_id, sid in list(user_socket_map.items()):
+        if sid == request.sid:
+            user_socket_map.pop(user_id)
+            break
+    
+    # Handle game disconnection
+    for game_id in list(active_games.keys()):
+        game = active_games[game_id]
+        if request.sid == game['player1'] or request.sid == game['player2']:
+            opponent_sid = game['player2'] if request.sid == game['player1'] else game['player1']
+            emit('opponent_disconnected', {'message': 'Opponent disconnected'}, room=opponent_sid)
             
-        connected_users[request.sid] = user_id
-        
-        # Update user status
-        user = User.query.get(user_id)
-        if user:
-            user.is_online = True
-            user.last_seen = datetime.utcnow()
-            db.session.commit()
-        
-        emit('authentication_confirmed', {'success': True, 'user_id': user_id})
-        print(f"✅ User {user_id} authenticated")
-        
-    except Exception as e:
-        emit('authentication_failed', {'message': str(e)})
+            # Update user stats
+            try:
+                if game.get('player1_user_id'):
+                    user = User.query.get(game['player1_user_id'])
+                    if user:
+                        user.losses += 1
+                        db.session.commit()
+                
+                if game.get('player2_user_id'):
+                    user = User.query.get(game['player2_user_id'])
+                    if user:
+                        user.wins += 1
+                        db.session.commit()
+            except:
+                pass
+            
+            # Clean up game
+            leave_room(game_id, opponent_sid)
+            active_games.pop(game_id, None)
+            break
+
+@socketio.on('authenticate')
+def handle_authenticate(data):
+    user_id = data.get('user_id')
+    if user_id:
+        user_socket_map[user_id] = request.sid
+        emit('authenticated', {'message': 'Authentication successful'})
 
 @socketio.on('find_match')
 def handle_find_match(data):
-    try:
-        user_id = data.get('user_id')
-        username = data.get('username')
+    user_id = data.get('user_id')
+    username = data.get('username')
+    
+    if not user_id or not username:
+        emit('error', {'message': 'User information required'})
+        return
+    
+    # Update socket mapping
+    user_socket_map[user_id] = request.sid
+    
+    if request.sid in waiting_players:
+        emit('message', {'message': 'Already looking for match'})
+        return
+    
+    # Add to waiting list
+    waiting_players[request.sid] = {
+        'user_id': user_id,
+        'username': username,
+        'sid': request.sid
+    }
+    
+    emit('searching', {'message': 'Looking for opponent...'})
+    
+    # Try to match players
+    if len(waiting_players) >= 2:
+        waiting_list = list(waiting_players.items())
+        player1_sid, player1_data = waiting_list[0]
+        player2_sid, player2_data = waiting_list[1]
         
-        if not user_id or not username:
-            emit('error', {'message': 'User information required'})
-            return
+        # Remove from waiting list
+        waiting_players.pop(player1_sid, None)
+        waiting_players.pop(player2_sid, None)
         
-        # Add to waiting players
-        waiting_players[request.sid] = {
-            'user_id': user_id,
-            'username': username,
-            'joined_at': time.time()
+        # Create game
+        game_id = f"game_{datetime.now().timestamp()}_{random.randint(1000, 9999)}"
+        active_games[game_id] = {
+            'player1': player1_sid,
+            'player2': player2_sid,
+            'player1_user_id': player1_data['user_id'],
+            'player2_user_id': player2_data['user_id'],
+            'player1_username': player1_data['username'],
+            'player2_username': player2_data['username'],
+            'choices': {},
+            'scores': {player1_sid: 0, player2_sid: 0},
+            'round': 1
         }
         
-        emit('searching_match', {'message': 'Searching for opponent...'})
-        print(f"🔍 Player {username} looking for match")
+        # Join room
+        join_room(game_id, player1_sid)
+        join_room(game_id, player2_sid)
         
-        # Try to match with another player
-        try_match_players()
+        # Notify players
+        emit('match_found', {
+            'game_id': game_id,
+            'opponent': player2_data['username'],
+            'your_side': 'player1'
+        }, room=player1_sid)
         
-    except Exception as e:
-        emit('error', {'message': str(e)})
-
-@socketio.on('cancel_matchmaking')
-def handle_cancel_matchmaking():
-    if request.sid in waiting_players:
-        username = waiting_players[request.sid]['username']
-        del waiting_players[request.sid]
-        emit('matchmaking_cancelled', {'message': 'Matchmaking cancelled'})
-        print(f"❌ Matchmaking cancelled for {username}")
-
-@socketio.on('send_chat_message')
-def handle_chat_message(data):
-    try:
-        room_id = data.get('room_id')
-        user_id = data.get('user_id')
-        username = data.get('username')
-        message = data.get('message')
+        emit('match_found', {
+            'game_id': game_id,
+            'opponent': player1_data['username'],
+            'your_side': 'player2'
+        }, room=player2_sid)
         
-        if not all([room_id, user_id, username, message]):
-            return
-        
-        # Save chat message to database
-        chat_message = ChatMessage(
-            room_id=room_id,
-            user_id=user_id,
-            username=username,
-            message=message
-        )
-        db.session.add(chat_message)
-        db.session.commit()
-        
-        # Broadcast to room
-        emit('new_chat_message', {
-            'username': username,
-            'message': message,
-            'timestamp': datetime.utcnow().isoformat()
-        }, room=room_id)
-        
-    except Exception as e:
-        print(f"❌ Chat error: {e}")
+        # Start game
+        emit('game_start', {
+            'message': 'Game started! Make your choice.',
+            'round': 1
+        }, room=game_id)
 
 @socketio.on('make_choice')
 def handle_choice(data):
-    try:
-        game_id = data.get('game_id')
-        choice = data.get('choice')
-        user_id = data.get('user_id')
-        
-        if game_id not in active_games:
-            emit('error', {'message': 'Game not found'})
-            return
-        
-        game = active_games[game_id]
-        
-        # Update player choice
-        if game['player1_sid'] == request.sid:
-            game['player1_choice'] = choice
-            game['player1_ready'] = True
-        elif game['player2_sid'] == request.sid:
-            game['player2_choice'] = choice
-            game['player2_ready'] = True
-        
-        # Notify players about choice made
-        emit('player_choice_made', {
-            'player': 'player1' if game['player1_sid'] == request.sid else 'player2'
-        }, room=game_id)
-        
-        # Check if both players made their choices
-        if game['player1_ready'] and game['player2_ready']:
-            calculate_round_result(game_id)
-            
-    except Exception as e:
-        emit('error', {'message': str(e)})
-
-@socketio.on('join_game_room')
-def handle_join_game_room(data):
     game_id = data.get('game_id')
-    join_room(game_id)
-    emit('joined_room', {'game_id': game_id})
-
-@socketio.on('leave_game_room')
-def handle_leave_game_room(data):
-    game_id = data.get('game_id')
-    leave_room(game_id)
-    emit('left_room', {'game_id': game_id})
-
-def try_match_players():
-    if len(waiting_players) < 2:
+    choice = data.get('choice')
+    
+    if not game_id or not choice:
+        emit('error', {'message': 'Game ID and choice required'})
         return
     
-    # Get two waiting players
-    player_sids = list(waiting_players.keys())[:2]
-    player1_data = waiting_players[player_sids[0]]
-    player2_data = waiting_players[player_sids[1]]
+    if game_id not in active_games:
+        emit('error', {'message': 'Game not found'})
+        return
     
-    # Create game room
-    game_id = f"game_{int(time.time())}_{random.randint(1000, 9999)}"
+    game = active_games[game_id]
     
-    active_games[game_id] = {
-        'player1_sid': player_sids[0],
-        'player2_sid': player_sids[1],
-        'player1_id': player1_data['user_id'],
-        'player2_id': player2_data['user_id'],
-        'player1_username': player1_data['username'],
-        'player2_username': player2_data['username'],
-        'player1_choice': None,
-        'player2_choice': None,
-        'player1_ready': False,
-        'player2_ready': False,
-        'player1_score': 0,
-        'player2_score': 0,
-        'current_round': 1,
-        'max_rounds': 3,
-        'created_at': time.time()
-    }
+    # Validate choice
+    valid_choices = ['rock', 'paper', 'scissors']
+    if choice not in valid_choices:
+        emit('error', {'message': 'Invalid choice'})
+        return
     
-    # Remove from waiting list
-    del waiting_players[player_sids[0]]
-    del waiting_players[player_sids[1]]
+    # Record choice
+    game['choices'][request.sid] = choice
     
-    # Notify players
-    emit('match_found', {
-        'game_id': game_id,
-        'opponent': player2_data['username'],
-        'player_number': 1
-    }, room=player_sids[0])
+    # Notify player
+    emit('choice_received', {'choice': choice})
     
-    emit('match_found', {
-        'game_id': game_id,
-        'opponent': player1_data['username'],
-        'player_number': 2
-    }, room=player_sids[1])
+    # Notify opponent
+    opponent_sid = game['player2'] if request.sid == game['player1'] else game['player1']
+    emit('opponent_choosing', {}, room=opponent_sid)
     
-    # Create game session in database
-    try:
-        game_session = GameSession(
-            room_id=game_id,
-            player1_id=player1_data['user_id'],
-            player2_id=player2_data['user_id'],
-            status='playing'
-        )
-        db.session.add(game_session)
-        db.session.commit()
-    except Exception as e:
-        print(f"❌ Game session creation error: {e}")
-    
-    # Join both players to game room
-    join_room(game_id, sid=player_sids[0])
-    join_room(game_id, sid=player_sids[1])
-    
-    # Start first round
-    emit('round_start', {
-        'round_number': 1,
-        'max_rounds': 3
-    }, room=game_id)
-    
-    print(f"🎮 Game started: {player1_data['username']} vs {player2_data['username']}")
+    # Check if both made choices
+    if len(game['choices']) == 2:
+        determine_winner(game_id)
 
-def calculate_round_result(game_id):
-    try:
-        game = active_games[game_id]
-        p1_choice = game['player1_choice']
-        p2_choice = game['player2_choice']
-        
-        # Determine winner
-        if p1_choice == p2_choice:
-            result = 'draw'
-            winner = None
-        elif (p1_choice == 'rock' and p2_choice == 'scissors') or \
-             (p1_choice == 'paper' and p2_choice == 'rock') or \
-             (p1_choice == 'scissors' and p2_choice == 'paper'):
-            result = 'player1_win'
-            winner = game['player1_username']
-            game['player1_score'] += 1
-        else:
-            result = 'player2_win'
-            winner = game['player2_username']
-            game['player2_score'] += 1
-        
-        # Update database with game result
-        try:
-            game_session = GameSession.query.filter_by(room_id=game_id).first()
-            if game_session:
-                game_session.player1_score = game['player1_score']
-                game_session.player2_score = game['player2_score']
-                db.session.commit()
-        except Exception as e:
-            print(f"❌ Database update error: {e}")
-        
-        # Send round result
-        emit('round_result', {
-            'result': result,
-            'winner': winner,
-            'player1_choice': p1_choice,
-            'player2_choice': p2_choice,
-            'player1_score': game['player1_score'],
-            'player2_score': game['player2_score'],
-            'current_round': game['current_round']
-        }, room=game_id)
-        
-        # Reset choices for next round
-        game['player1_choice'] = None
-        game['player2_choice'] = None
-        game['player1_ready'] = False
-        game['player2_ready'] = False
-        
-        # Check if game should continue
-        game['current_round'] += 1
-        
-        max_score = max(game['player1_score'], game['player2_score'])
-        rounds_left = game['max_rounds'] - game['current_round'] + 1
-        
-        if max_score > rounds_left or game['current_round'] > game['max_rounds']:
-            # Game over
-            end_game(game_id)
-        else:
-            # Next round
-            emit('next_round', {
-                'round_number': game['current_round']
-            }, room=game_id)
-            
-    except Exception as e:
-        print(f"❌ Round calculation error: {e}")
-
-def end_game(game_id):
-    try:
-        game = active_games[game_id]
-        
-        # Determine final winner
-        if game['player1_score'] > game['player2_score']:
-            final_winner = game['player1_username']
-            winner_id = game['player1_id']
-            loser_id = game['player2_id']
-            player1_result = 'win'
-            player2_result = 'lose'
-        elif game['player2_score'] > game['player1_score']:
-            final_winner = game['player2_username']
-            winner_id = game['player2_id']
-            loser_id = game['player1_id']
-            player1_result = 'lose'
-            player2_result = 'win'
-        else:
-            final_winner = None
-            winner_id = None
-            player1_result = 'draw'
-            player2_result = 'draw'
-        
-        # Update user statistics
-        try:
-            player1 = User.query.get(game['player1_id'])
-            player2 = User.query.get(game['player2_id'])
-            
-            if player1:
-                player1.update_stats(player1_result)
-            if player2:
-                player2.update_stats(player2_result)
-            
-            # Update game session
-            game_session = GameSession.query.filter_by(room_id=game_id).first()
-            if game_session:
-                game_session.winner_id = winner_id
-                game_session.status = 'finished'
-                game_session.ended_at = datetime.utcnow()
-            
-            db.session.commit()
-        except Exception as e:
-            print(f"❌ Stats update error: {e}")
-        
-        # Send game over event
-        emit('game_over', {
-            'winner': final_winner,
-            'player1_score': game['player1_score'],
-            'player2_score': game['player2_score'],
-            'player1_username': game['player1_username'],
-            'player2_username': game['player2_username']
-        }, room=game_id)
-        
-        print(f"🏁 Game finished: {game['player1_username']} {game['player1_score']}-{game['player2_score']} {game['player2_username']}")
-        
-    except Exception as e:
-        print(f"❌ Game end error: {e}")
-    finally:
-        # Clean up game
-        if game_id in active_games:
-            del active_games[game_id]
-
-def handle_game_disconnect(game_id, disconnected_sid):
+@socketio.on('play_again')
+def handle_play_again(data):
+    game_id = data.get('game_id')
+    
     if game_id not in active_games:
         return
     
-    try:
+    game = active_games[game_id]
+    
+    # Reset choices
+    game['choices'] = {}
+    game['round'] += 1
+    
+    # Start new round
+    emit('next_round', {
+        'round': game['round'],
+        'scores': game['scores']
+    }, room=game_id)
+
+@socketio.on('leave_game')
+def handle_leave_game(data):
+    game_id = data.get('game_id')
+    
+    if game_id in active_games:
         game = active_games[game_id]
         
-        # Determine which player disconnected
-        if disconnected_sid == game['player1_sid']:
-            disconnected_player = game['player1_username']
-            winner = game['player2_username']
+        # Notify opponent
+        opponent_sid = game['player2'] if request.sid == game['player1'] else game['player1']
+        if opponent_sid:
+            emit('opponent_left', {'message': 'Opponent left the game'}, room=opponent_sid)
+        
+        # Clean up
+        leave_room(game_id, request.sid)
+        if opponent_sid:
+            leave_room(game_id, opponent_sid)
+        
+        active_games.pop(game_id, None)
+
+def determine_winner(game_id):
+    game = active_games[game_id]
+    p1_sid = game['player1']
+    p2_sid = game['player2']
+    
+    p1_choice = game['choices'][p1_sid]
+    p2_choice = game['choices'][p2_sid]
+    
+    # Game logic
+    if p1_choice == p2_choice:
+        winner_sid = None
+        result_text = "Draw!"
+    elif (p1_choice == 'rock' and p2_choice == 'scissors') or \
+         (p1_choice == 'paper' and p2_choice == 'rock') or \
+         (p1_choice == 'scissors' and p2_choice == 'paper'):
+        winner_sid = p1_sid
+        game['scores'][p1_sid] += 1
+        result_text = f"{game['player1_username']} wins!"
+    else:
+        winner_sid = p2_sid
+        game['scores'][p2_sid] += 1
+        result_text = f"{game['player2_username']} wins!"
+    
+    # Update user stats in database
+    try:
+        if winner_sid == p1_sid:
+            user = User.query.get(game['player1_user_id'])
+            if user:
+                user.wins += 1
+                
+            user2 = User.query.get(game['player2_user_id'])
+            if user2:
+                user2.losses += 1
+                
+            # Update leaderboard
+            leader1 = Leaderboard.query.filter_by(user_id=game['player1_user_id']).first()
+            if leader1:
+                leader1.score += 10
+                leader1.wins += 1
+                
+        elif winner_sid == p2_sid:
+            user = User.query.get(game['player2_user_id'])
+            if user:
+                user.wins += 1
+                
+            user1 = User.query.get(game['player1_user_id'])
+            if user1:
+                user1.losses += 1
+                
+            # Update leaderboard
+            leader2 = Leaderboard.query.filter_by(user_id=game['player2_user_id']).first()
+            if leader2:
+                leader2.score += 10
+                leader2.wins += 1
         else:
-            disconnected_player = game['player2_username']
-            winner = game['player1_username']
+            # Draw
+            user1 = User.query.get(game['player1_user_id'])
+            if user1:
+                user1.draws += 1
+                
+            user2 = User.query.get(game['player2_user_id'])
+            if user2:
+                user2.draws += 1
         
-        # Notify remaining player
-        emit('player_disconnected', {
-            'disconnected_player': disconnected_player,
-            'winner': winner
-        }, room=game_id)
+        db.session.commit()
         
-        print(f"❌ Player disconnected: {disconnected_player} from game {game_id}")
+        # Record game session
+        game_session = GameSession(
+            player1_id=game['player1_user_id'],
+            player2_id=game['player2_user_id'],
+            winner_id=game['player1_user_id'] if winner_sid == p1_sid else game['player2_user_id'] if winner_sid else None,
+            status='completed'
+        )
+        db.session.add(game_session)
+        db.session.commit()
         
     except Exception as e:
-        print(f"❌ Disconnect handling error: {e}")
-    finally:
-        # Clean up game
-        if game_id in active_games:
-            del active_games[game_id]
+        print(f"Error updating stats: {e}")
+    
+    # Send results to players
+    result_data = {
+        'player1_choice': p1_choice,
+        'player2_choice': p2_choice,
+        'result': 'win' if winner_sid == p1_sid else 'lose' if winner_sid == p2_sid else 'draw',
+        'result_text': result_text,
+        'scores': {
+            game['player1_username']: game['scores'][p1_sid],
+            game['player2_username']: game['scores'][p2_sid]
+        },
+        'winner': game['player1_username'] if winner_sid == p1_sid else game['player2_username'] if winner_sid else None
+    }
+    
+    emit('game_result', result_data, room=game_id)
+    
+    # Clear choices for next round
+    game['choices'] = {}
+    
+    # Check if game over (best of 3)
+    if game['scores'][p1_sid] >= 2 or game['scores'][p2_sid] >= 2:
+        game_winner = game['player1_username'] if game['scores'][p1_sid] >= 2 else game['player2_username']
+        emit('game_over', {
+            'winner': game_winner,
+            'final_scores': result_data['scores']
+        }, room=game_id)
+        
+        # Clean up after delay
+        @socketio.sleep(5)
+        def cleanup():
+            if game_id in active_games:
+                leave_room(game_id, p1_sid)
+                leave_room(game_id, p2_sid)
+                active_games.pop(game_id, None)
+        
+        socketio.start_background_task(cleanup)
 
 if __name__ == '__main__':
     with app.app_context():
-        try:
-            db.create_all()
-            print("✅ Database tables created successfully!")
-            
-            # Create default admin user if not exists
-            if not User.query.filter_by(username='admin').first():
-                admin = User(username='admin', email='admin@game.com')
-                admin.set_password('admin123')
-                db.session.add(admin)
-                db.session.commit()
-                print("✅ Default admin user created!")
-                
-        except Exception as e:
-            print(f"❌ Database initialization error: {e}")
-    
-    # Get port from environment variable or default to 5000
+        db.create_all()
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Server starting on port {port}...")
-    
-    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
+from models import db, User, Game, Leaderboard, Friendship, ChatMessage, Achievement, UserAchievement, Notification, init_database
+
+# app creation code...
+
+if __name__ == '__main__':
+    with app.app_context():
+        # Initialize database
+        init_database()
+    socketio.run(app, host='0.0.0.0', port=port, debug=True)
