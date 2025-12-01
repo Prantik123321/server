@@ -1,0 +1,392 @@
+{% extends "base.html" %}
+
+{% block title %}Home - SocialConnect{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stories-container {
+        margin-bottom: 30px;
+    }
+    
+    .feed-container {
+        display: grid;
+        grid-template-columns: 1fr 300px;
+        gap: 30px;
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 20px;
+    }
+    
+    @media (max-width: 992px) {
+        .feed-container {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="feed-container">
+    <!-- Left Column - Feed -->
+    <div class="feed-column">
+        <!-- Stories Section -->
+        <div class="stories-container">
+            <div class="stories-header">
+                <h2>Stories</h2>
+                <a href="/stories" class="see-all">See All</a>
+            </div>
+            <div class="stories-scroll" id="storiesScroll">
+                <!-- Stories will be loaded here -->
+                <div class="story-add">
+                    <div class="story-circle">
+                        <i class="fas fa-plus"></i>
+                    </div>
+                    <span>Add Story</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Post -->
+        <div class="create-post-card">
+            <div class="create-post-header">
+                <img src="/static/uploads/profile_pics/{{ request.user.profile_picture }}" 
+                     alt="Profile" class="post-profile-pic">
+                <input type="text" placeholder="What's on your mind?" 
+                       class="post-input" id="postInput">
+            </div>
+            <div class="create-post-options">
+                <button class="post-option" onclick="openMediaUpload('photo')">
+                    <i class="fas fa-image" style="color: #45bd62;"></i>
+                    <span>Photo/Video</span>
+                </button>
+                <button class="post-option" onclick="openMediaUpload('video')">
+                    <i class="fas fa-video" style="color: #f5533d;"></i>
+                    <span>Live Video</span>
+                </button>
+                <button class="post-option" onclick="openPollModal()">
+                    <i class="fas fa-poll" style="color: #1da1f2;"></i>
+                    <span>Poll</span>
+                </button>
+                <button class="post-option" onclick="openFeelingModal()">
+                    <i class="fas fa-smile" style="color: #ffd600;"></i>
+                    <span>Feeling</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Feed Posts -->
+        <div class="posts-container" id="postsContainer">
+            <!-- Posts will be loaded here -->
+            <div class="loading-spinner" id="loadingSpinner">
+                <i class="fas fa-spinner fa-spin"></i>
+                <span>Loading posts...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Column - Sidebar -->
+    <div class="sidebar-column">
+        <!-- Profile Card -->
+        <div class="profile-card">
+            <div class="profile-cover">
+                <img src="https://images.unsplash.com/photo-1557683316-973673baf926?ixlib=rb-1.2.1&auto=format&fit=crop&w=600&q=80" 
+                     alt="Cover">
+                <div class="profile-edit">
+                    <i class="fas fa-camera"></i>
+                </div>
+            </div>
+            <div class="profile-info">
+                <img src="/static/uploads/profile_pics/{{ request.user.profile_picture }}" 
+                     alt="Profile" class="profile-avatar">
+                <h3>{{ request.user.full_name or request.user.username }}</h3>
+                <p class="profile-bio">{{ request.user.bio or "Welcome to my profile!" }}</p>
+                
+                <div class="profile-stats">
+                    <div class="stat">
+                        <strong id="postCount">0</strong>
+                        <span>Posts</span>
+                    </div>
+                    <div class="stat">
+                        <strong id="followerCount">0</strong>
+                        <span>Followers</span>
+                    </div>
+                    <div class="stat">
+                        <strong id="followingCount">0</strong>
+                        <span>Following</span>
+                    </div>
+                </div>
+                
+                <button class="btn btn-primary btn-edit-profile" onclick="window.location.href='/profile'">
+                    <i class="fas fa-edit"></i> Edit Profile
+                </button>
+            </div>
+        </div>
+
+        <!-- Trending Topics -->
+        <div class="trending-card">
+            <h3>Trending Now</h3>
+            <div class="trending-list">
+                <div class="trending-item">
+                    <span class="trending-rank">1</span>
+                    <div class="trending-content">
+                        <h4>#WebDevelopment</h4>
+                        <p>12.5k posts</p>
+                    </div>
+                </div>
+                <div class="trending-item">
+                    <span class="trending-rank">2</span>
+                    <div class="trending-content">
+                        <h4>#AIRevolution</h4>
+                        <p>9.8k posts</p>
+                    </div>
+                </div>
+                <div class="trending-item">
+                    <span class="trending-rank">3</span>
+                    <div class="trending-content">
+                        <h4>#StartupLife</h4>
+                        <p>7.2k posts</p>
+                    </div>
+                </div>
+                <div class="trending-item">
+                    <span class="trending-rank">4</span>
+                    <div class="trending-content">
+                        <h4>#TechNews</h4>
+                        <p>5.4k posts</p>
+                    </div>
+                </div>
+            </div>
+            <a href="/explore" class="see-more">See more</a>
+        </div>
+
+        <!-- Online Friends -->
+        <div class="friends-card">
+            <h3>Online Friends</h3>
+            <div class="friends-list" id="onlineFriends">
+                <!-- Online friends will be loaded here -->
+            </div>
+        </div>
+
+        <!-- Quick Links -->
+        <div class="links-card">
+            <h3>Quick Links</h3>
+            <div class="links-list">
+                <a href="#" class="link-item">
+                    <i class="fas fa-users"></i>
+                    <span>Groups</span>
+                </a>
+                <a href="#" class="link-item">
+                    <i class="fas fa-calendar-alt"></i>
+                    <span>Events</span>
+                </a>
+                <a href="#" class="link-item">
+                    <i class="fas fa-gamepad"></i>
+                    <span>Games</span>
+                </a>
+                <a href="#" class="link-item">
+                    <i class="fas fa-shopping-bag"></i>
+                    <span>Marketplace</span>
+                </a>
+                <a href="#" class="link-item">
+                    <i class="fas fa-bookmark"></i>
+                    <span>Saved</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create Post Modal -->
+<div class="modal" id="createPostModal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Create Post</h2>
+            <button class="modal-close" onclick="closeModal('createPostModal')">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body">
+            <div class="modal-profile">
+                <img src="/static/uploads/profile_pics/{{ request.user.profile_picture }}" 
+                     alt="Profile" class="modal-profile-pic">
+                <div>
+                    <h4>{{ request.user.full_name or request.user.username }}</h4>
+                    <div class="privacy-selector">
+                        <select id="privacySelect">
+                            <option value="public">🌍 Public</option>
+                            <option value="friends">👥 Friends Only</option>
+                            <option value="private">🔒 Only Me</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            
+            <textarea id="postCaption" placeholder="What's on your mind?" 
+                      rows="5"></textarea>
+            
+            <div class="media-preview" id="mediaPreview"></div>
+            
+            <div class="modal-options">
+                <button class="modal-option" onclick="triggerFileInput('image')">
+                    <i class="fas fa-image"></i> Photo/Video
+                </button>
+                <button class="modal-option" onclick="triggerFileInput('video')">
+                    <i class="fas fa-video"></i> Live Video
+                </button>
+                <button class="modal-option" onclick="addFeeling()">
+                    <i class="fas fa-smile"></i> Feeling
+                </button>
+                <button class="modal-option" onclick="addLocation()">
+                    <i class="fas fa-map-marker-alt"></i> Location
+                </button>
+            </div>
+            
+            <input type="file" id="mediaInput" accept="image/*,video/*" 
+                   multiple style="display: none;" onchange="handleMediaUpload(event)">
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal('createPostModal')">
+                Cancel
+            </button>
+            <button class="btn btn-primary" id="postSubmitBtn" onclick="submitPost()">
+                <i class="fas fa-paper-plane"></i> Post
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Post Detail Modal -->
+<div class="modal" id="postDetailModal">
+    <!-- Will be populated dynamically -->
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/feed.js"></script>
+<script src="/static/js/websocket.js"></script>
+<script>
+// Initialize feed
+document.addEventListener('DOMContentLoaded', function() {
+    loadStories();
+    loadPosts();
+    loadUserStats();
+    loadOnlineFriends();
+    
+    // Setup WebSocket for real-time updates
+    setupWebSocket();
+    
+    // Setup infinite scroll
+    setupInfiniteScroll();
+    
+    // Setup post input click
+    document.getElementById('postInput').addEventListener('click', function() {
+        openModal('createPostModal');
+    });
+});
+
+function openModal(modalId) {
+    document.getElementById(modalId).style.display = 'flex';
+}
+
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+
+function triggerFileInput(type) {
+    const input = document.getElementById('mediaInput');
+    input.click();
+}
+
+function handleMediaUpload(event) {
+    const files = event.target.files;
+    const preview = document.getElementById('mediaPreview');
+    preview.innerHTML = '';
+    
+    for (let file of files) {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            const mediaItem = document.createElement('div');
+            mediaItem.className = 'media-item';
+            
+            if (file.type.startsWith('image/')) {
+                mediaItem.innerHTML = `
+                    <img src="${e.target.result}" alt="Preview">
+                    <button class="remove-media" onclick="removeMedia(this)">
+                        <i class="fas fa-times"></i>
+                    </button>
+                `;
+            } else if (file.type.startsWith('video/')) {
+                mediaItem.innerHTML = `
+                    <video controls>
+                        <source src="${e.target.result}" type="${file.type}">
+                    </video>
+                    <button class="remove-media" onclick="removeMedia(this)">
+                        <i class="fas fa-times"></i>
+                    </button>
+                `;
+            }
+            
+            preview.appendChild(mediaItem);
+        };
+        reader.readAsDataURL(file);
+    }
+}
+
+function removeMedia(button) {
+    button.parentElement.remove();
+}
+
+async function submitPost() {
+    const caption = document.getElementById('postCaption').value;
+    const privacy = document.getElementById('privacySelect').value;
+    const mediaInput = document.getElementById('mediaInput');
+    const submitBtn = document.getElementById('postSubmitBtn');
+    
+    if (!caption && mediaInput.files.length === 0) {
+        showToast('Please add some content to your post', 'error');
+        return;
+    }
+    
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Posting...';
+    submitBtn.disabled = true;
+    
+    const formData = new FormData();
+    formData.append('caption', caption);
+    
+    for (let file of mediaInput.files) {
+        formData.append('file', file);
+    }
+    
+    try {
+        const token = localStorage.getItem('token');
+        const response = await fetch('/posts/', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            body: formData
+        });
+        
+        if (response.ok) {
+            showToast('Post created successfully!', 'success');
+            closeModal('createPostModal');
+            loadPosts(); // Reload posts
+            resetPostForm();
+        } else {
+            const error = await response.json();
+            showToast(error.detail || 'Failed to create post', 'error');
+        }
+    } catch (error) {
+        showToast('Network error. Please try again.', 'error');
+    } finally {
+        submitBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Post';
+        submitBtn.disabled = false;
+    }
+}
+
+function resetPostForm() {
+    document.getElementById('postCaption').value = '';
+    document.getElementById('mediaPreview').innerHTML = '';
+    document.getElementById('mediaInput').value = '';
+}
+</script>
+{% endblock %}

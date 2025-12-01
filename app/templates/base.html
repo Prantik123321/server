@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SocialConnect{% endblock %}</title>
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/static/images/logo.png">
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/responsive.css">
+    <link rel="stylesheet" href="/static/css/dark-mode.css">
+    
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+    
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    {% if request.user %}
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <!-- Logo -->
+            <div class="nav-logo">
+                <a href="/" class="logo-link">
+                    <i class="fas fa-heart"></i>
+                    <span>SocialConnect</span>
+                </a>
+            </div>
+
+            <!-- Search -->
+            <div class="nav-search">
+                <div class="search-box">
+                    <i class="fas fa-search"></i>
+                    <input type="text" placeholder="Search posts, people, or tags..." id="search-input">
+                </div>
+            </div>
+
+            <!-- Navigation Links -->
+            <div class="nav-links">
+                <a href="/" class="nav-link active">
+                    <i class="fas fa-home"></i>
+                    <span>Home</span>
+                </a>
+                <a href="/explore" class="nav-link">
+                    <i class="fas fa-compass"></i>
+                    <span>Explore</span>
+                </a>
+                <a href="/create" class="nav-link">
+                    <i class="fas fa-plus-square"></i>
+                    <span>Create</span>
+                </a>
+                <a href="/stories" class="nav-link">
+                    <i class="fas fa-history"></i>
+                    <span>Stories</span>
+                </a>
+                <a href="/messages" class="nav-link">
+                    <i class="fas fa-comments"></i>
+                    <span>Messages</span>
+                    <span class="notification-badge">3</span>
+                </a>
+                <a href="/notifications" class="nav-link">
+                    <i class="fas fa-bell"></i>
+                    <span>Notifications</span>
+                    <span class="notification-badge">5</span>
+                </a>
+                
+                <!-- Profile Dropdown -->
+                <div class="profile-dropdown">
+                    <div class="profile-trigger">
+                        <img src="/static/uploads/profile_pics/{{ request.user.profile_picture }}" 
+                             alt="Profile" class="nav-profile-pic">
+                    </div>
+                    <div class="dropdown-menu">
+                        <a href="/profile" class="dropdown-item">
+                            <i class="fas fa-user"></i> Profile
+                        </a>
+                        <a href="/settings" class="dropdown-item">
+                            <i class="fas fa-cog"></i> Settings
+                        </a>
+                        <div class="dropdown-divider"></div>
+                        <a href="#" onclick="logout()" class="dropdown-item">
+                            <i class="fas fa-sign-out-alt"></i> Logout
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Mobile Menu Toggle -->
+            <button class="mobile-menu-toggle" id="mobileMenuToggle">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Mobile Menu -->
+    <div class="mobile-menu" id="mobileMenu">
+        <div class="mobile-menu-header">
+            <img src="/static/uploads/profile_pics/{{ request.user.profile_picture }}" 
+                 alt="Profile" class="mobile-profile-pic">
+            <span>{{ request.user.full_name or request.user.username }}</span>
+            <button class="mobile-menu-close" id="mobileMenuClose">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="mobile-menu-items">
+            <a href="/" class="mobile-menu-item">
+                <i class="fas fa-home"></i> Home
+            </a>
+            <a href="/profile" class="mobile-menu-item">
+                <i class="fas fa-user"></i> Profile
+            </a>
+            <a href="/explore" class="mobile-menu-item">
+                <i class="fas fa-compass"></i> Explore
+            </a>
+            <a href="/create" class="mobile-menu-item">
+                <i class="fas fa-plus-square"></i> Create
+            </a>
+            <a href="/stories" class="mobile-menu-item">
+                <i class="fas fa-history"></i> Stories
+            </a>
+            <a href="/messages" class="mobile-menu-item">
+                <i class="fas fa-comments"></i> Messages
+            </a>
+            <a href="/notifications" class="mobile-menu-item">
+                <i class="fas fa-bell"></i> Notifications
+            </a>
+            <a href="/settings" class="mobile-menu-item">
+                <i class="fas fa-cog"></i> Settings
+            </a>
+            <a href="#" onclick="logout()" class="mobile-menu-item">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-logo">
+                <i class="fas fa-heart"></i>
+                <span>SocialConnect</span>
+            </div>
+            <div class="footer-links">
+                <a href="#">About</a>
+                <a href="#">Help</a>
+                <a href="#">Privacy</a>
+                <a href="#">Terms</a>
+                <a href="#">Careers</a>
+                <a href="#">Developers</a>
+            </div>
+            <div class="footer-copyright">
+                © 2024 SocialConnect. All rights reserved.
+            </div>
+        </div>
+    </footer>
+
+    <!-- JavaScript -->
+    <script src="/static/js/main.js"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: social-media-app
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: socialmedia_db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+    healthCheckPath: /
+    autoDeploy: true
+
+databases:
+  - name: socialmedia_db
+    databaseName: socialmedia
+    user: socialmedia_user
+    plan: free
