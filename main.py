@@ -1,6 +1,7 @@
 import os
 import io
 import logging
+import time
 from typing import Optional, Dict
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.responses import JSONResponse
@@ -11,7 +12,6 @@ import numpy as np
 import cv2
 from googletrans import Translator
 import uvicorn
-import time
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +27,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for all origins (adjust for production)
+# Enable CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,22 +39,6 @@ app.add_middleware(
 # Initialize translator
 translator = Translator()
 
-# Language mapping for Tesseract
-LANGUAGE_MAP = {
-    'bn': 'ben',      # Bengali
-    'en': 'eng',      # English
-    'hi': 'hin',      # Hindi
-    'es': 'spa',      # Spanish
-    'fr': 'fra',      # French
-    'de': 'deu',      # German
-    'ja': 'jpn',      # Japanese
-    'ko': 'kor',      # Korean
-    'zh-cn': 'chi_sim',  # Chinese Simplified
-    'ru': 'rus',      # Russian
-    'ar': 'ara',      # Arabic
-    'pt': 'por',      # Portuguese
-}
-
 def preprocess_image(image_bytes: bytes) -> Image.Image:
     """Preprocess image for better OCR accuracy"""
     try:
@@ -63,7 +47,7 @@ def preprocess_image(image_bytes: bytes) -> Image.Image:
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
         if img is None:
-            raise ValueError("Could not decode image")
+            return Image.open(io.BytesIO(image_bytes))
         
         # Convert to grayscale
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -74,48 +58,35 @@ def preprocess_image(image_bytes: bytes) -> Image.Image:
             cv2.THRESH_BINARY, 11, 2
         )
         
-        # Denoise
-        processed = cv2.medianBlur(processed, 3)
-        
-        # Convert back to PIL Image
         return Image.fromarray(processed)
     except Exception as e:
-        logger.warning(f"Image preprocessing failed, using original: {e}")
-        # Fallback to original image
+        logger.warning(f"Image preprocessing failed: {e}")
         return Image.open(io.BytesIO(image_bytes))
 
 def perform_ocr(image_bytes: bytes) -> Dict:
-    """Perform OCR on image and return detected text and language"""
+    """Perform OCR on image"""
     try:
         start_time = time.time()
         
         # Preprocess image
         img = preprocess_image(image_bytes)
         
-        # Try multiple language combinations for better accuracy
-        lang_configs = [
-            'eng+ben+hin',  # Primary languages
-            'eng',
-            'ben',
-            'hin',
-            'eng+ben',
-            'eng+hin'
-        ]
+        # Try multiple language combinations
+        lang_combinations = ['eng+ben+hin', 'eng', 'ben', 'hin', 'eng+ben', 'eng+hin']
         
         best_text = ""
         best_lang = "unknown"
         
-        for lang_config in lang_configs:
+        for lang_config in lang_combinations:
             try:
                 config = f'--oem 3 --psm 6 -l {lang_config}'
-                text = pytesseract.image_to_string(img, config=config)
-                text = text.strip()
+                text = pytesseract.image_to_string(img, config=config).strip()
                 
                 if text and len(text) > len(best_text):
                     best_text = text
-                    if 'ben' in lang_config:
+                    if 'ben' in lang_config and any(char in text for char in 'অআইঈউঊঋএঐওঔকখগঘঙচছজঝঞটঠডঢণতথদধনপফবভমযরলশষসহািীুূৃেৈোৌ'):
                         best_lang = 'bn'
-                    elif 'hin' in lang_config:
+                    elif 'hin' in lang_config and any(char in text for char in 'अआइईउऊऋएऐओऔकखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसहािीुूृेैोौ'):
                         best_lang = 'hi'
                     else:
                         best_lang = 'en'
@@ -123,20 +94,27 @@ def perform_ocr(image_bytes: bytes) -> Dict:
                 continue
         
         if not best_text:
-            # If no text detected with combinations, try auto
-            text = pytesseract.image_to_string(img, config='--oem 3 --psm 6')
-            best_text = text.strip()
+            # Fallback to English only
+            text = pytesseract.image_to_string(img, config='--oem 3 --psm 6').strip()
+            best_text = text
         
         processing_time = time.time() - start_time
         
         return {
             "text": best_text,
             "language": best_lang,
-            "processing_time": round(processing_time, 3)
+            "processing_time": round(processing_time, 3),
+            "success": bool(best_text)
         }
     except Exception as e:
         logger.error(f"OCR failed: {e}")
-        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")
+        return {
+            "text": "",
+            "language": "unknown",
+            "processing_time": 0,
+            "success": False,
+            "error": str(e)
+        }
 
 def translate_text(text: str, target_lang: str = "en") -> Dict:
     """Translate text to target language"""
@@ -145,16 +123,16 @@ def translate_text(text: str, target_lang: str = "en") -> Dict:
             return {
                 "translated": "",
                 "detected_lang": "unknown",
-                "confidence": 0.0
+                "confidence": 0.0,
+                "success": False
             }
         
         # Detect language
         try:
             detected = translator.detect(text)
             detected_lang = detected.lang
-            confidence = detected.confidence
+            confidence = detected.confidence or 0.0
         except:
-            # Fallback detection
             detected_lang = "en"
             confidence = 0.5
         
@@ -168,15 +146,17 @@ def translate_text(text: str, target_lang: str = "en") -> Dict:
         return {
             "translated": translated_text,
             "detected_lang": detected_lang,
-            "confidence": round(confidence, 2) if confidence else 0.5
+            "confidence": round(confidence, 2),
+            "success": True
         }
     except Exception as e:
         logger.error(f"Translation failed: {e}")
-        # Return original text if translation fails
         return {
             "translated": text,
             "detected_lang": "unknown",
-            "confidence": 0.0
+            "confidence": 0.0,
+            "success": False,
+            "error": str(e)
         }
 
 @app.get("/")
@@ -186,56 +166,55 @@ async def root():
         "status": "online",
         "service": "OCR Translation Server",
         "version": "1.0.0",
-        "supported_languages": list(LANGUAGE_MAP.keys())
+        "endpoints": {
+            "health": "/health",
+            "process_image": "/api/process",
+            "translate": "/api/translate"
+        }
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "timestamp": time.time()}
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "service": "ocr-translation"
+    }
 
 @app.post("/api/process")
 async def process_image(
     file: UploadFile = File(...),
-    target_language: str = "en",
-    ocr_only: bool = False
+    target_language: str = "en"
 ):
     """
     Process image: OCR + Translation
     """
     try:
         # Validate file
-        if not file.content_type.startswith('image/'):
+        if not file.content_type or not file.content_type.startswith('image/'):
             raise HTTPException(status_code=400, detail="File must be an image")
         
         # Read image
         contents = await file.read()
         
-        if len(contents) > 5 * 1024 * 1024:  # 5MB limit
-            raise HTTPException(status_code=400, detail="Image too large (max 5MB)")
+        # Size limit: 3MB
+        if len(contents) > 3 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Image too large (max 3MB)")
         
         # Perform OCR
         ocr_result = perform_ocr(contents)
         
-        if ocr_only:
+        if not ocr_result.get("success", False):
             return JSONResponse(content={
-                "status": "success",
+                "status": "error",
+                "message": "No text detected in image",
                 "ocr": ocr_result,
                 "translation": None
             })
         
         # Translate text
-        if ocr_result["text"]:
-            translation_result = translate_text(
-                ocr_result["text"],
-                target_language
-            )
-        else:
-            translation_result = {
-                "translated": "",
-                "detected_lang": "unknown",
-                "confidence": 0.0
-            }
+        translation_result = translate_text(ocr_result["text"], target_language)
         
         return JSONResponse(content={
             "status": "success",
@@ -245,19 +224,25 @@ async def process_image(
             "timestamp": time.time()
         })
         
-    except HTTPException:
-        raise
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(f"Processing error: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/api/translate")
 async def translate_only(text: str, target_language: str = "en"):
-    """Translate text only (for testing)"""
+    """Translate text only"""
     try:
+        if not text.strip():
+            return JSONResponse(content={
+                "status": "error",
+                "message": "No text provided"
+            })
+        
         result = translate_text(text, target_language)
         return JSONResponse(content={
-            "status": "success",
+            "status": "success" if result["success"] else "error",
             "original": text,
             **result,
             "target_language": target_language
@@ -265,10 +250,12 @@ async def translate_only(text: str, target_language: str = "en"):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Run server
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        reload=True
+        port=port,
+        reload=False
     )
