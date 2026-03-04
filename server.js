@@ -1,82 +1,74 @@
 const express = require("express");
 const http = require("http");
-const { Server } = require("socket.io");
+const WebSocket = require("ws");
 const cors = require("cors");
 
 const app = express();
 app.use(cors());
 
-// Render requires dynamic port
 const PORT = process.env.PORT || 3000;
 
 const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-  },
-});
-
-// In-memory player store
 let players = {};
 
-// Basic health check
 app.get("/", (req, res) => {
-  res.send("Multiplayer server is running");
+  res.send("WebSocket Multiplayer Server Running");
 });
 
-io.on("connection", (socket) => {
-  console.log("Player connected:", socket.id);
+wss.on("connection", (ws) => {
+  const id = Math.random().toString(36).substr(2, 9);
 
-  // Create new player
-  players[socket.id] = {
-    id: socket.id,
-    x: 0,
-    y: 0,
-    z: 0,
-    ry: 0
-  };
+  players[id] = { id, x: 0, y: 0, z: 0, ry: 0 };
 
-  // Send existing players to new player
-  socket.emit("currentPlayers", players);
+  console.log("Player connected:", id);
 
-  // Notify others
-  socket.broadcast.emit("newPlayer", players[socket.id]);
+  // Send current players
+  ws.send(JSON.stringify({
+    type: "init",
+    id: id,
+    players: players
+  }));
 
-  // Receive position update
-  socket.on("updatePosition", (data) => {
-    if (!players[socket.id]) return;
+  ws.on("message", (message) => {
+    const data = JSON.parse(message);
 
-    // Basic anti-cheat (ignore teleport jump)
-    const old = players[socket.id];
+    if (data.type === "update") {
+      players[id] = {
+        id: id,
+        x: data.x,
+        y: data.y,
+        z: data.z,
+        ry: data.ry
+      };
 
-    const dx = Math.abs(data.x - old.x);
-    const dy = Math.abs(data.y - old.y);
-    const dz = Math.abs(data.z - old.z);
-
-    if (dx > 20 || dy > 20 || dz > 20) {
-      console.log("Teleport detected, ignoring");
-      return;
+      broadcast({
+        type: "move",
+        player: players[id]
+      });
     }
-
-    players[socket.id] = {
-      id: socket.id,
-      x: data.x,
-      y: data.y,
-      z: data.z,
-      ry: data.ry
-    };
-
-    // Broadcast to others
-    socket.broadcast.emit("playerMoved", players[socket.id]);
   });
 
-  socket.on("disconnect", () => {
-    console.log("Player disconnected:", socket.id);
-    delete players[socket.id];
-    io.emit("playerDisconnected", socket.id);
+  ws.on("close", () => {
+    console.log("Player disconnected:", id);
+    delete players[id];
+
+    broadcast({
+      type: "disconnect",
+      id: id
+    });
   });
 });
+
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  });
+}
 
 server.listen(PORT, () => {
   console.log("Server running on port", PORT);
